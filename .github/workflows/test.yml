@@ -1,0 +1,328 @@
+name: Test Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-action:
+    name: Test Action
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install
+      - name: Lint
+        run: pnpm lint
+      - name: Format check
+        run: pnpm format:check
+      - name: Run action tests
+        run: pnpm test:coverage
+      - name: Build action
+        run: pnpm run build
+
+  test-functionality:
+    name: Test Action Functionality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable corepack
+        run: corepack enable
+      - name: Install dependencies
+        run: pnpm install
+      - name: Build action
+        run: pnpm run build
+      - name: Create test projects
+        run: |
+          mkdir -p test-projects/project1 test-projects/project2 test-projects/project3
+          # Project1: Small project (10 files)
+          for i in {1..10}; do
+            echo "// file $i" > test-projects/project1/file$i.ts
+          done
+          # Project2: Medium project (60 files)
+          for i in {1..60}; do
+            echo "// file $i" > test-projects/project2/file$i.ts
+          done
+          # Project3: Large project (150 files)
+          for i in {1..150}; do
+            echo "// file $i" > test-projects/project3/file$i.ts
+          done
+      - name: Generate matrix with multiple projects
+        id: generate-matrix
+        uses: ./
+        with:
+          projects: '["project1", "project2", "project3"]'
+          base-path: test-projects
+          files-per-job: 50
+          min-jobs: 1
+          max-jobs: 10
+          file-patterns: '**/*.ts'
+      - name: Verify matrix output
+        run: |
+          MATRIX='${{ steps.generate-matrix.outputs.matrix }}'
+          echo "Generated matrix: $MATRIX"
+
+          # Verify matrix is valid JSON
+          echo "$MATRIX" | jq '.' > /dev/null || (echo "ERROR: Matrix is not valid JSON" && exit 1)
+
+          # Verify matrix has entries
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          echo "Matrix has $COUNT entries"
+
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: Matrix is empty"
+            exit 1
+          fi
+
+          # Verify project1 has 1 job (10 files / 50 = 1)
+          PROJECT1_COUNT=$(echo "$MATRIX" | jq '[.[] | select(.project == "project1")] | length')
+          if [ "$PROJECT1_COUNT" -ne 1 ]; then
+            echo "ERROR: Expected project1 to have 1 job, got $PROJECT1_COUNT"
+            exit 1
+          fi
+
+          # Verify project2 has 2 jobs (60 files / 50 = 2)
+          PROJECT2_COUNT=$(echo "$MATRIX" | jq '[.[] | select(.project == "project2")] | length')
+          if [ "$PROJECT2_COUNT" -ne 2 ]; then
+            echo "ERROR: Expected project2 to have 2 jobs, got $PROJECT2_COUNT"
+            exit 1
+          fi
+
+          # Verify project3 has 3 jobs (150 files / 50 = 3)
+          PROJECT3_COUNT=$(echo "$MATRIX" | jq '[.[] | select(.project == "project3")] | length')
+          if [ "$PROJECT3_COUNT" -ne 3 ]; then
+            echo "ERROR: Expected project3 to have 3 jobs, got $PROJECT3_COUNT"
+            exit 1
+          fi
+
+          # Verify all entries have project and batch fields
+          INVALID=$(echo "$MATRIX" | jq '[.[] | select(.project == null or .batch == null)] | length')
+          if [ "$INVALID" -ne 0 ]; then
+            echo "ERROR: Found entries without project or batch fields"
+            exit 1
+          fi
+
+          echo "✓ Matrix validation passed"
+      - name: Test single project
+        id: single-project
+        uses: ./
+        with:
+          projects: '["."]'
+          files-per-job: 50
+          max-jobs: 5
+          file-patterns: '**/*.ts'
+      - name: Verify single project output
+        run: |
+          MATRIX='${{ steps.single-project.outputs.matrix }}'
+          echo "Single project matrix: $MATRIX"
+
+          # Verify matrix is valid JSON
+          echo "$MATRIX" | jq '.' > /dev/null || (echo "ERROR: Matrix is not valid JSON" && exit 1)
+
+          # Verify matrix has entries
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          if [ "$COUNT" -eq 0 ]; then
+            echo "ERROR: Single project matrix is empty"
+            exit 1
+          fi
+
+          # Verify all entries have "." as project
+          INVALID=$(echo "$MATRIX" | jq '[.[] | select(.project != ".")] | length')
+          if [ "$INVALID" -ne 0 ]; then
+            echo "ERROR: Found entries with incorrect project field"
+            exit 1
+          fi
+
+          echo "✓ Single project validation passed"
+      - name: Test empty projects array
+        id: empty-projects
+        uses: ./
+        with:
+          projects: '[]'
+          files-per-job: 50
+      - name: Verify empty projects output
+        run: |
+          MATRIX='${{ steps.empty-projects.outputs.matrix }}'
+          echo "Empty projects matrix: $MATRIX"
+
+          # Verify matrix is empty array
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          if [ "$COUNT" -ne 0 ]; then
+            echo "ERROR: Expected empty matrix, got $COUNT entries"
+            exit 1
+          fi
+
+          echo "✓ Empty projects validation passed"
+      - name: Test max-jobs cap
+        id: max-jobs-test
+        uses: ./
+        with:
+          projects: '["project3"]'
+          base-path: test-projects
+          files-per-job: 10
+          max-jobs: 5
+          file-patterns: '**/*.ts'
+      - name: Verify max-jobs cap
+        run: |
+          MATRIX='${{ steps.max-jobs-test.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+
+          # Project3 has 150 files, with files-per-job=10, it would be 15 jobs
+          # But max-jobs=5, so it should be capped at 5
+          if [ "$COUNT" -ne 5 ]; then
+            echo "ERROR: Expected max 5 jobs, got $COUNT"
+            exit 1
+          fi
+
+          echo "✓ Max jobs cap validation passed"
+      - name: Test min-jobs constraint
+        id: min-jobs-test
+        uses: ./
+        with:
+          projects: '["project1"]'
+          base-path: test-projects
+          files-per-job: 50
+          min-jobs: 3
+          file-patterns: '**/*.ts'
+      - name: Verify min-jobs constraint
+        run: |
+          MATRIX='${{ steps.min-jobs-test.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+
+          # Project1 has 10 files, with files-per-job=50, it would be 1 job
+          # But min-jobs=3, so it should be 3
+          if [ "$COUNT" -ne 3 ]; then
+            echo "ERROR: Expected min 3 jobs, got $COUNT"
+            exit 1
+          fi
+
+          echo "✓ Min jobs constraint validation passed"
+      - name: Test with Scala projects
+        id: scala-test
+        uses: ./
+        with:
+          projects: '["project-scala"]'
+          base-path: test-fixtures
+          files-per-job: 1
+          file-patterns: '**/*.scala'
+      - name: Verify Scala output
+        run: |
+          MATRIX='${{ steps.scala-test.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          # Should find at least 2 Scala files (Service.scala and ServiceTest.scala)
+          if [ "$COUNT" -lt 2 ]; then
+            echo "ERROR: Expected at least 2 Scala files, got $COUNT jobs"
+            exit 1
+          fi
+          echo "✓ Scala language test passed"
+      - name: Test with TypeScript projects
+        id: typescript-test
+        uses: ./
+        with:
+          projects: '["project-typescript"]'
+          base-path: test-fixtures
+          files-per-job: 1
+          file-patterns: 'test/**/*.ts,**/*.test.ts'
+      - name: Verify TypeScript output
+        run: |
+          MATRIX='${{ steps.typescript-test.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          # Should find at least 3 TypeScript test files (test/index.test.ts, test/utils.test.ts, src/index.test.ts)
+          if [ "$COUNT" -lt 3 ]; then
+            echo "ERROR: Expected at least 3 TypeScript test files, got $COUNT jobs"
+            exit 1
+          fi
+          echo "✓ TypeScript language test passed"
+      - name: Test with Python projects
+        id: python-test
+        uses: ./
+        with:
+          projects: '["project-python"]'
+          base-path: test-fixtures
+          files-per-job: 1
+          file-patterns: 'tests/**/*.py,**/*_test.py'
+      - name: Verify Python output
+        run: |
+          MATRIX='${{ steps.python-test.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          # Should find at least 1 Python test file (tests/test_main.py)
+          if [ "$COUNT" -lt 1 ]; then
+            echo "ERROR: Expected at least 1 Python test file, got $COUNT jobs"
+            exit 1
+          fi
+          echo "✓ Python language test passed"
+      - name: Test with Go projects
+        id: go-test
+        uses: ./
+        with:
+          projects: '["project-go"]'
+          base-path: test-fixtures
+          files-per-job: 1
+          file-patterns: '**/*_test.go,**/*_integration_test.go'
+      - name: Verify Go output
+        run: |
+          MATRIX='${{ steps.go-test.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          # Should find at least 2 Go test files (utils_test.go and main_integration_test.go)
+          if [ "$COUNT" -lt 2 ]; then
+            echo "ERROR: Expected at least 2 Go test files, got $COUNT jobs"
+            exit 1
+          fi
+          echo "✓ Go language test passed"
+      - name: Test multiple languages together
+        id: multi-lang-test
+        uses: ./
+        with:
+          projects: '["project-scala", "project-typescript", "project-python", "project-go"]'
+          base-path: test-fixtures
+          files-per-job: 2
+          file-patterns: '**/*Test.scala,**/*Spec.scala,test/**/*.ts,**/*.test.ts,tests/**/*.py,**/*_test.py,**/*_test.go,**/*_integration_test.go'
+      - name: Verify multi-language output
+        run: |
+          MATRIX='${{ steps.multi-lang-test.outputs.matrix }}'
+          echo "Multi-language matrix: $MATRIX"
+
+          # Verify all projects are represented
+          SCALA_COUNT=$(echo "$MATRIX" | jq '[.[] | select(.project == "project-scala")] | length')
+          TS_COUNT=$(echo "$MATRIX" | jq '[.[] | select(.project == "project-typescript")] | length')
+          PYTHON_COUNT=$(echo "$MATRIX" | jq '[.[] | select(.project == "project-python")] | length')
+          GO_COUNT=$(echo "$MATRIX" | jq '[.[] | select(.project == "project-go")] | length')
+
+          if [ "$SCALA_COUNT" -eq 0 ] || [ "$TS_COUNT" -eq 0 ] || [ "$PYTHON_COUNT" -eq 0 ] || [ "$GO_COUNT" -eq 0 ]; then
+            echo "ERROR: Missing projects in matrix"
+            echo "Scala: $SCALA_COUNT, TypeScript: $TS_COUNT, Python: $PYTHON_COUNT, Go: $GO_COUNT"
+            exit 1
+          fi
+
+          echo "✓ Multi-language test passed (Scala: $SCALA_COUNT, TS: $TS_COUNT, Python: $PYTHON_COUNT, Go: $GO_COUNT jobs)"
+      - name: Test with test-count mode (Scala)
+        id: test-count-scala
+        uses: ./
+        with:
+          projects: '["project-scala"]'
+          base-path: test-fixtures
+          mode: test-count
+          tests-per-job: 1
+          file-patterns: '**/*.scala'
+      - name: Verify test-count mode output
+        run: |
+          MATRIX='${{ steps.test-count-scala.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          # Should find at least 1 test in the Scala files
+          if [ "$COUNT" -lt 1 ]; then
+            echo "ERROR: Expected at least 1 job with test-count mode, got $COUNT"
+            exit 1
+          fi
+          echo "✓ Test-count mode validation passed"

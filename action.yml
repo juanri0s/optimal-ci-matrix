@@ -1,0 +1,41 @@
+name: 'Optimal CI Matrix'
+description: 'Generate optimal CI matrix for parallel job execution'
+author: 'juanri0s'
+inputs:
+  projects:
+    description: 'JSON array of project names to include in the matrix (e.g., ["project1", "project2"])'
+    required: true
+  base-path:
+    description: 'Base path for project directories (default: current directory)'
+    required: false
+    default: '.'
+  files-per-job:
+    description: 'Target number of files per job (default: 50). Projects with more files will be split into multiple parallel jobs.'
+    required: false
+    default: '50'
+  min-jobs:
+    description: 'Minimum number of parallel jobs per project (default: 1)'
+    required: false
+    default: '1'
+  max-jobs:
+    description: 'Maximum number of parallel jobs per project (default: 10)'
+    required: false
+    default: '10'
+  file-patterns:
+    description: 'Comma-separated glob patterns to count files for job splitting (default: **/*)'
+    required: false
+    default: '**/*'
+  mode:
+    description: 'Counting mode: "file-count" (count files) or "test-count" (count tests within files). Test-count mode is more accurate when files can have varying numbers of tests. (default: file-count)'
+    required: false
+    default: 'file-count'
+  tests-per-job:
+    description: 'Target number of tests per job when using test-count mode. Only used when mode is "test-count". (default: 100)'
+    required: false
+    default: '100'
+outputs:
+  matrix:
+    description: 'JSON array of matrix entries with project and batch dimensions (e.g., [{"project":"p1","batch":1},{"project":"p1","batch":2}])'
+runs:
+  using: 'node24'
+  main: 'dist/index.js'

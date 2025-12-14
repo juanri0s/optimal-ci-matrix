@@ -1,0 +1,59 @@
+{
+  "name": "optimal-ci-matrix",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "GitHub Action for generating optimal CI matrix for parallel job execution",
+  "repository": "https://github.com/juanri0s/optimal-ci-matrix",
+  "homepage": "https://github.com/juanri0s/optimal-ci-matrix",
+  "bugs": "https://github.com/juanri0s/optimal-ci-matrix/issues",
+  "license": "MIT",
+  "author": "juanri0s",
+  "keywords": [
+    "github-action",
+    "ci",
+    "matrix",
+    "parallel-jobs",
+    "monorepo"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "action.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "packageManager": "pnpm@10.25.0+sha512.5e82639027af37cf832061bcc6d639c219634488e0f2baebe785028a793de7b525ffcd3f7ff574f5e9860654e098fe852ba8ac5dd5cefe1767d23a020a92f501",
+  "scripts": {
+    "build": "vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "eslint . --ext .ts,.tsx",
+    "lint:fix": "eslint . --ext .ts,.tsx --fix",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,json,md,yml,yaml}\"",
+    "update": "pnpm update --latest --recursive"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/github": "^6.0.0",
+    "glob": "^13.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0",
+    "@vitest/coverage-v8": "^4.0.15",
+    "eslint": "^9.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.4.0",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.0.0",
+    "vite": "^6.0.0",
+    "vitest": "^4.0.15"
+  }
+}
