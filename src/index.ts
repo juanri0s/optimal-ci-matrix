@@ -6,6 +6,18 @@ import { statSync, readFileSync } from 'fs';
 interface MatrixEntry {
   project: string;
   batch: number;
+  testCount?: number;
+  files?: string[];
+}
+
+interface FileTestInfo {
+  path: string;
+  testCount: number;
+}
+
+interface BatchInfo {
+  testCount: number;
+  files: string[];
 }
 
 interface ProjectJobInfo {
@@ -13,6 +25,7 @@ interface ProjectJobInfo {
   fileCount: number;
   testCount?: number;
   jobCount: number;
+  batches?: BatchInfo[];
 }
 
 function isValidPath(path: string, baseDir: string): boolean {
@@ -155,18 +168,18 @@ function detectLanguage(filePath: string): string {
 }
 
 /**
- * Counts total tests in project files
+ * Collects test file information with test counts
  */
-export async function countProjectTests(
+export async function collectProjectTestFiles(
   projectPath: string,
   filePatterns: string[]
-): Promise<number> {
+): Promise<FileTestInfo[]> {
   const allFiles = new Set<string>();
+  const fileTests: FileTestInfo[] = [];
   const cwd = process.cwd();
-  let totalTests = 0;
 
   if (!isValidPath(projectPath, cwd)) {
-    return 0;
+    return [];
   }
 
   for (const pattern of filePatterns) {
@@ -199,7 +212,7 @@ export async function countProjectTests(
             allFiles.add(file);
             const language = detectLanguage(file);
             const testCount = countTestsInFile(file, language);
-            totalTests += testCount;
+            fileTests.push({ path: file, testCount });
           }
         } catch {
           // Skip files that can't be accessed
@@ -208,7 +221,94 @@ export async function countProjectTests(
     } catch {}
   }
 
-  return totalTests;
+  return fileTests;
+}
+
+/**
+ * Counts total tests in project files
+ */
+export async function countProjectTests(
+  projectPath: string,
+  filePatterns: string[]
+): Promise<number> {
+  const fileTests = await collectProjectTestFiles(projectPath, filePatterns);
+  return fileTests.reduce((sum, file) => sum + file.testCount, 0);
+}
+
+/**
+ * Calculates optimal batches using bin-packing algorithm
+ */
+export function calculateBatchesWithBinPacking(
+  fileTests: FileTestInfo[],
+  maxTestsPerBatch: number,
+  maxTestsPerFile: number,
+  minJobs: number,
+  maxJobs: number
+): BatchInfo[] {
+  if (fileTests.length === 0) {
+    return Array.from({ length: minJobs }, () => ({ testCount: 0, files: [] }));
+  }
+
+  const batches: BatchInfo[] = [];
+  const regularFiles: FileTestInfo[] = [];
+  const heavyFiles: FileTestInfo[] = [];
+
+  for (const file of fileTests) {
+    if (maxTestsPerFile > 0 && file.testCount >= maxTestsPerFile) {
+      heavyFiles.push(file);
+    } else {
+      regularFiles.push(file);
+    }
+  }
+
+  regularFiles.sort((a, b) => b.testCount - a.testCount);
+
+  for (const heavyFile of heavyFiles) {
+    batches.push({ testCount: heavyFile.testCount, files: [heavyFile.path] });
+  }
+
+  for (const file of regularFiles) {
+    let minBatchIdx = 0;
+    let minBatchTests = batches.length > 0 ? batches[0].testCount : 0;
+
+    for (let i = 1; i < batches.length; i++) {
+      if (batches[i].testCount < minBatchTests) {
+        minBatchTests = batches[i].testCount;
+        minBatchIdx = i;
+      }
+    }
+
+    if (batches.length === 0 || minBatchTests + file.testCount > maxTestsPerBatch) {
+      batches.push({ testCount: file.testCount, files: [file.path] });
+    } else {
+      batches[minBatchIdx].testCount += file.testCount;
+      batches[minBatchIdx].files.push(file.path);
+    }
+  }
+
+  const jobCount = Math.max(minJobs, Math.min(maxJobs, batches.length));
+
+  if (batches.length < jobCount) {
+    while (batches.length < jobCount) {
+      batches.push({ testCount: 0, files: [] });
+    }
+  } else if (batches.length > jobCount) {
+    while (batches.length > jobCount) {
+      const lastBatch = batches.pop()!;
+      let minBatchIdx = 0;
+      let minBatchTests = batches[0].testCount;
+      for (let i = 1; i < batches.length; i++) {
+        if (batches[i].testCount < minBatchTests) {
+          minBatchTests = batches[i].testCount;
+          minBatchIdx = i;
+        }
+      }
+      batches[minBatchIdx].testCount += lastBatch.testCount;
+      batches[minBatchIdx].files.push(...lastBatch.files);
+    }
+  }
+
+  return batches;
 }
 
 /**
@@ -240,10 +340,16 @@ export function generateMatrix(projectJobs: ProjectJobInfo[]): MatrixEntry[] {
 
   for (const projectInfo of projectJobs) {
     for (let batch = 1; batch <= projectInfo.jobCount; batch++) {
-      matrix.push({
+      const entry: MatrixEntry = {
         project: projectInfo.project,
         batch,
-      });
+      };
+      if (projectInfo.batches && projectInfo.batches[batch - 1]) {
+        const batchInfo = projectInfo.batches[batch - 1];
+        entry.testCount = batchInfo.testCount;
+        entry.files = batchInfo.files;
+      }
+      matrix.push(entry);
     }
   }
 
@@ -270,6 +376,8 @@ export async function run(): Promise<void> {
     const testsPerJob = parseInt(testsPerJobInput || '100', 10);
     const minJobs = parseInt(core.getInput('min-jobs') || '1', 10);
     const maxJobs = parseInt(core.getInput('max-jobs') || '10', 10);
+    const maxTestsPerFileInput = core.getInput('max-tests-per-file');
+    const maxTestsPerFile = maxTestsPerFileInput ? parseInt(maxTestsPerFileInput, 10) : 0;
     const filePatternsInput = core.getInput('file-patterns') || '**/*';
 
     // Validate mode
@@ -307,6 +415,9 @@ export async function run(): Promise<void> {
     }
     if (maxJobs > 100) {
       throw new Error('max-jobs cannot exceed 100');
+    }
+    if (maxTestsPerFileInput !== '' && (isNaN(maxTestsPerFile) || maxTestsPerFile < 0)) {
+      throw new Error('max-tests-per-file must be a non-negative integer');
     }
 
     let projects: string[];
@@ -358,6 +469,9 @@ export async function run(): Promise<void> {
       core.info(`Target files per job: ${filesPerJob}`);
     } else {
       core.info(`Target tests per job: ${testsPerJob}`);
+      if (maxTestsPerFile > 0) {
+        core.info(`Heavy test isolation: files with ${maxTestsPerFile}+ tests get own batch`);
+      }
     }
     core.info(`Job range: ${minJobs}-${maxJobs} per project`);
     core.info(`File patterns: ${filePatterns.join(', ')}`);
@@ -372,17 +486,27 @@ export async function run(): Promise<void> {
       const fileCount = await countProjectFiles(projectPath, filePatterns);
       let count: number;
       let itemsPerJob: number;
+      let batches: BatchInfo[] | undefined;
 
       if (mode === 'test-count') {
-        const testCount = await countProjectTests(projectPath, filePatterns);
-        count = testCount;
+        const fileTests = await collectProjectTestFiles(projectPath, filePatterns);
+        count = fileTests.reduce((sum, file) => sum + file.testCount, 0);
         itemsPerJob = testsPerJob;
+        batches = calculateBatchesWithBinPacking(
+          fileTests,
+          testsPerJob,
+          maxTestsPerFile,
+          minJobs,
+          maxJobs
+        );
       } else {
         count = fileCount;
         itemsPerJob = filesPerJob;
       }
 
-      const jobCount = calculateOptimalJobs(count, itemsPerJob, minJobs, maxJobs);
+      const jobCount = batches
+        ? batches.length
+        : calculateOptimalJobs(count, itemsPerJob, minJobs, maxJobs);
 
       const projectInfo: ProjectJobInfo = {
         project,
@@ -392,16 +516,18 @@ export async function run(): Promise<void> {
 
       if (mode === 'test-count') {
         projectInfo.testCount = count;
+        projectInfo.batches = batches;
       }
 
       projectJobs.push(projectInfo);
 
-      const itemsPerJobValue = count > 0 ? Math.ceil(count / jobCount) : 0;
-      if (mode === 'test-count') {
+      if (mode === 'test-count' && batches) {
+        const batchCounts = batches.map((b) => b.testCount).join(', ');
         core.info(
-          `  Files: ${fileCount}, Tests: ${count}, Jobs: ${jobCount} (~${itemsPerJobValue} tests/job)`
+          `  Files: ${fileCount}, Tests: ${count}, Jobs: ${jobCount} (batch test counts: ${batchCounts})`
         );
       } else {
+        const itemsPerJobValue = count > 0 ? Math.ceil(count / jobCount) : 0;
         core.info(`  Files: ${fileCount}, Jobs: ${jobCount} (~${itemsPerJobValue} files/job)`);
       }
     }
@@ -417,7 +543,14 @@ export async function run(): Promise<void> {
     core.info(`  Total jobs: ${matrix.length}`);
     core.info(`\nMatrix preview:`);
     for (const entry of matrix.slice(0, 10)) {
-      core.info(`  - project: ${entry.project}, batch: ${entry.batch}`);
+      let preview = `  - project: ${entry.project}, batch: ${entry.batch}`;
+      if (entry.testCount !== undefined) {
+        preview += `, testCount: ${entry.testCount}`;
+      }
+      if (entry.files && entry.files.length > 0) {
+        preview += `, files: ${entry.files.length}`;
+      }
+      core.info(preview);
     }
     if (matrix.length > 10) {
       core.info(`  ... and ${matrix.length - 10} more entries`);

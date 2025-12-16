@@ -120,6 +120,14 @@ jobs:
             exit 1
           fi
 
+          # Verify file-count mode entries don't have testCount or files (those are test-count mode only)
+          HAS_TEST_COUNT=$(echo "$MATRIX" | jq '[.[] | has("testCount")] | any')
+          HAS_FILES=$(echo "$MATRIX" | jq '[.[] | has("files")] | any')
+          if [ "$HAS_TEST_COUNT" = "true" ] || [ "$HAS_FILES" = "true" ]; then
+            echo "ERROR: File-count mode should not include testCount or files fields"
+            exit 1
+          fi
+
           echo "✓ Matrix validation passed"
       - name: Test single project
         id: single-project
@@ -331,4 +339,52 @@ jobs:
             echo "ERROR: Expected at least 1 job with test-count mode, got $COUNT"
             exit 1
           fi
+          # Check if testCount and files are present in matrix entries
+          HAS_TEST_COUNT=$(echo "$MATRIX" | jq '[.[] | has("testCount")] | all')
+          HAS_FILES=$(echo "$MATRIX" | jq '[.[] | has("files")] | all')
+          if [ "$HAS_TEST_COUNT" != "true" ]; then
+            echo "ERROR: Expected testCount field in all matrix entries"
+            exit 1
+          fi
+          if [ "$HAS_FILES" != "true" ]; then
+            echo "ERROR: Expected files field in all matrix entries"
+            exit 1
+          fi
           echo "✓ Test-count mode validation passed"
+      - name: Test max-tests-per-file feature
+        id: max-tests-per-file-test
+        uses: ./
+        with:
+          projects: '["project-scala"]'
+          base-path: test-fixtures
+          mode: test-count
+          tests-per-job: 10
+          max-tests-per-file: 5
+          file-patterns: '**/*.scala'
+      - name: Verify max-tests-per-file output
+        run: |
+          MATRIX='${{ steps.max-tests-per-file-test.outputs.matrix }}'
+          COUNT=$(echo "$MATRIX" | jq 'length')
+          # Should create at least 1 batch
+          if [ "$COUNT" -lt 1 ]; then
+            echo "ERROR: Expected at least 1 batch with max-tests-per-file, got $COUNT"
+            exit 1
+          fi
+          # Check if testCount and files are present in matrix entries
+          HAS_TEST_COUNT=$(echo "$MATRIX" | jq '[.[] | has("testCount")] | all')
+          HAS_FILES=$(echo "$MATRIX" | jq '[.[] | has("files")] | all')
+          if [ "$HAS_TEST_COUNT" != "true" ]; then
+            echo "ERROR: Expected testCount field in all matrix entries"
+            exit 1
+          fi
+          if [ "$HAS_FILES" != "true" ]; then
+            echo "ERROR: Expected files field in all matrix entries"
+            exit 1
+          fi
+          # Verify files arrays are non-empty where testCount > 0
+          EMPTY_FILES=$(echo "$MATRIX" | jq '[.[] | select(.testCount > 0 and (.files | length == 0))] | length')
+          if [ "$EMPTY_FILES" -ne 0 ]; then
+            echo "ERROR: Found batches with tests but no files"
+            exit 1
+          fi
+          echo "✓ Max-tests-per-file validation passed"

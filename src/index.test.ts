@@ -42,7 +42,9 @@ import { resolve, relative } from 'path';
 import {
   countProjectFiles,
   countProjectTests,
+  collectProjectTestFiles,
   calculateOptimalJobs,
+  calculateBatchesWithBinPacking,
   generateMatrix,
   run,
 } from './index.js';
@@ -589,12 +591,280 @@ describe('generateMatrix', () => {
     const result = generateMatrix([]);
     expect(result).toEqual([]);
   });
+
+  it('should include testCount and files when batches are provided', () => {
+    const projectJobs = [
+      {
+        project: 'project1',
+        fileCount: 10,
+        jobCount: 2,
+        testCount: 150,
+        batches: [
+          { testCount: 75, files: ['file1.scala', 'file2.scala'] },
+          { testCount: 75, files: ['file3.scala'] },
+        ],
+      },
+    ];
+    const result = generateMatrix(projectJobs);
+
+    expect(result).toEqual([
+      { project: 'project1', batch: 1, testCount: 75, files: ['file1.scala', 'file2.scala'] },
+      { project: 'project1', batch: 2, testCount: 75, files: ['file3.scala'] },
+    ]);
+  });
+});
+
+describe('collectProjectTestFiles', () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockStatSync.mockReturnValue({ isFile: () => true, size: 1000 });
+    mockReadFileSync.mockReturnValue('test("test1") test("test2")');
+    const actualPath = await vi.importActual<typeof import('path')>('path');
+    mockResolve.mockImplementation((...args: string[]) => actualPath.resolve(...args));
+    mockRelative.mockImplementation((from: string, to: string) => actualPath.relative(from, to));
+  });
+
+  it('should collect test files with test counts', async () => {
+    mockGlob.mockResolvedValue(['test1.scala', 'test2.scala']);
+    mockReadFileSync
+      .mockReturnValueOnce('test("test1") test("test2")')
+      .mockReturnValueOnce('test("test3")');
+
+    const result = await collectProjectTestFiles('project1', ['**/*.scala']);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].path).toBe('test1.scala');
+    expect(result[0].testCount).toBeGreaterThanOrEqual(2);
+    expect(result[1].path).toBe('test2.scala');
+    expect(result[1].testCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('should filter out invalid paths', async () => {
+    mockGlob.mockResolvedValue(['../invalid.scala', 'valid.scala']);
+    mockReadFileSync.mockReturnValue('test("test")');
+    const actualPath = await vi.importActual<typeof import('path')>('path');
+    mockRelative.mockImplementation((from: string, to: string) => {
+      const relative = actualPath.relative(from, to);
+      if (relative.includes('invalid') && !relative.startsWith('..')) {
+        return '../' + relative;
+      }
+      return relative;
+    });
+
+    const result = await collectProjectTestFiles('project1', ['**/*.scala']);
+
+    expect(result.every((f) => !f.path.includes('../invalid'))).toBe(true);
+  });
+
+  it('should handle files with unicode characters in paths', async () => {
+    mockGlob.mockResolvedValue(['test-ñame.scala', 'test-文件.scala']);
+    mockReadFileSync.mockReturnValue('test("test")');
+
+    const result = await collectProjectTestFiles('project1', ['**/*.scala']);
+
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    result.forEach((file) => {
+      expect(typeof file.path).toBe('string');
+      expect(file.testCount).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  it('should return empty array for invalid path', async () => {
+    mockRelative.mockImplementation(() => '../../invalid');
+
+    const result = await collectProjectTestFiles('../invalid', ['**/*.scala']);
+
+    expect(result).toEqual([]);
+  });
+
+  it('should handle empty results', async () => {
+    mockGlob.mockResolvedValue([]);
+
+    const result = await collectProjectTestFiles('project1', ['**/*.scala']);
+
+    expect(result).toEqual([]);
+  });
+});
+
+describe('calculateBatchesWithBinPacking', () => {
+  it('should create batches using bin-packing', () => {
+    const fileTests = [
+      { path: 'file1.scala', testCount: 30 },
+      { path: 'file2.scala', testCount: 25 },
+      { path: 'file3.scala', testCount: 20 },
+      { path: 'file4.scala', testCount: 15 },
+    ];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 50, 0, 1, 10);
+
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    const totalTests = result.reduce((sum, batch) => sum + batch.testCount, 0);
+    expect(totalTests).toBe(90);
+    result.forEach((batch) => {
+      expect(batch).toHaveProperty('files');
+      expect(Array.isArray(batch.files)).toBe(true);
+    });
+  });
+
+  it('should isolate heavy test files', () => {
+    const fileTests = [
+      { path: 'heavy.scala', testCount: 30 },
+      { path: 'file1.scala', testCount: 10 },
+      { path: 'file2.scala', testCount: 10 },
+    ];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 25, 25, 1, 10);
+
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    const heavyBatch = result.find((b) => b.testCount === 30);
+    expect(heavyBatch).toBeDefined();
+    expect(heavyBatch?.files).toContain('heavy.scala');
+  });
+
+  it('should respect min-jobs', () => {
+    const fileTests = [{ path: 'file1.scala', testCount: 10 }];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 50, 0, 3, 10);
+
+    expect(result.length).toBe(3);
+    expect(result[0].files).toContain('file1.scala');
+    expect(result[1].files).toEqual([]);
+    expect(result[2].files).toEqual([]);
+  });
+
+  it('should respect max-jobs', () => {
+    const fileTests = Array.from({ length: 20 }, (_, i) => ({
+      path: `file${i}.scala`,
+      testCount: 10,
+    }));
+
+    const result = calculateBatchesWithBinPacking(fileTests, 10, 0, 1, 5);
+
+    expect(result.length).toBe(5);
+  });
+
+  it('should handle empty input', () => {
+    const result = calculateBatchesWithBinPacking([], 50, 0, 2, 10);
+
+    expect(result.length).toBe(2);
+    expect(result[0].testCount).toBe(0);
+    expect(result[0].files).toEqual([]);
+    expect(result[1].testCount).toBe(0);
+    expect(result[1].files).toEqual([]);
+  });
+
+  it('should distribute tests evenly', () => {
+    const fileTests = Array.from({ length: 10 }, (_, i) => ({
+      path: `file${i}.scala`,
+      testCount: 10,
+    }));
+
+    const result = calculateBatchesWithBinPacking(fileTests, 25, 0, 1, 10);
+
+    expect(result.length).toBeGreaterThanOrEqual(2);
+    const maxTests = Math.max(...result.map((b) => b.testCount));
+    const minTests = Math.min(...result.map((b) => b.testCount));
+    expect(maxTests - minTests).toBeLessThanOrEqual(10);
+    const allFiles = result.flatMap((b) => b.files);
+    expect(allFiles.length).toBe(10);
+    expect(new Set(allFiles).size).toBe(10);
+  });
+
+  it('should handle files with 0 tests', () => {
+    const fileTests = [
+      { path: 'file1.scala', testCount: 0 },
+      { path: 'file2.scala', testCount: 10 },
+      { path: 'file3.scala', testCount: 0 },
+    ];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 50, 0, 1, 10);
+
+    expect(result.length).toBeGreaterThanOrEqual(1);
+    const allFiles = result.flatMap((b) => b.files);
+    expect(allFiles).toContain('file1.scala');
+    expect(allFiles).toContain('file2.scala');
+    expect(allFiles).toContain('file3.scala');
+  });
+
+  it('should isolate file when test count exactly equals max-tests-per-file', () => {
+    const fileTests = [
+      { path: 'exact.scala', testCount: 25 },
+      { path: 'file1.scala', testCount: 10 },
+    ];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 50, 25, 1, 10);
+
+    const exactBatch = result.find((b) => b.files.includes('exact.scala'));
+    expect(exactBatch).toBeDefined();
+    expect(exactBatch?.testCount).toBeGreaterThanOrEqual(25);
+    expect(exactBatch?.files).toContain('exact.scala');
+  });
+
+  it('should handle max-tests-per-file larger than tests-per-job', () => {
+    const fileTests = [
+      { path: 'heavy.scala', testCount: 100 },
+      { path: 'file1.scala', testCount: 10 },
+    ];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 50, 75, 1, 10);
+
+    const heavyBatch = result.find((b) => b.files.includes('heavy.scala'));
+    expect(heavyBatch).toBeDefined();
+    expect(heavyBatch?.testCount).toBe(100);
+    expect(heavyBatch?.files.length).toBe(1);
+  });
+
+  it('should handle multiple heavy files', () => {
+    const fileTests = [
+      { path: 'heavy1.scala', testCount: 30 },
+      { path: 'heavy2.scala', testCount: 35 },
+      { path: 'file1.scala', testCount: 10 },
+    ];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 50, 25, 1, 10);
+
+    const heavy1Batch = result.find((b) => b.files.includes('heavy1.scala'));
+    const heavy2Batch = result.find((b) => b.files.includes('heavy2.scala'));
+    expect(heavy1Batch).toBeDefined();
+    expect(heavy2Batch).toBeDefined();
+    expect(heavy1Batch?.files).toContain('heavy1.scala');
+    expect(heavy2Batch?.files).toContain('heavy2.scala');
+    expect(heavy1Batch).not.toBe(heavy2Batch);
+  });
+
+  it('should handle files with special characters in paths', () => {
+    const fileTests = [
+      { path: 'test-file_with.dots.scala', testCount: 10 },
+      { path: 'test file with spaces.scala', testCount: 10 },
+      { path: 'test@file#with$special.scala', testCount: 10 },
+    ];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 50, 0, 1, 10);
+
+    const allFiles = result.flatMap((b) => b.files);
+    expect(allFiles).toContain('test-file_with.dots.scala');
+    expect(allFiles).toContain('test file with spaces.scala');
+    expect(allFiles).toContain('test@file#with$special.scala');
+  });
+
+  it('should handle single file input', () => {
+    const fileTests = [{ path: 'single.scala', testCount: 50 }];
+
+    const result = calculateBatchesWithBinPacking(fileTests, 100, 0, 1, 10);
+
+    expect(result.length).toBe(1);
+    expect(result[0].testCount).toBe(50);
+    expect(result[0].files).toEqual(['single.scala']);
+  });
 });
 
 describe('run', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
-    mockCore.getInput.mockReturnValue('');
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'max-tests-per-file') return '';
+      return '';
+    });
     mockCore.setOutput.mockImplementation(() => {});
     mockCore.setFailed.mockImplementation(() => {});
     mockCore.info.mockImplementation(() => {});
@@ -1123,6 +1393,201 @@ describe('run', () => {
     await run();
 
     expect(mockCore.setFailed).toHaveBeenCalledWith('tests-per-job must be a positive integer');
+  });
+
+  it('should validate max-tests-per-file', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'max-tests-per-file') return '-1';
+      return '';
+    });
+
+    await run();
+
+    expect(mockCore.setFailed).toHaveBeenCalledWith(
+      'max-tests-per-file must be a non-negative integer'
+    );
+  });
+
+  it('should use max-tests-per-file in test-count mode', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'test-count';
+      if (key === 'tests-per-job') return '50';
+      if (key === 'max-tests-per-file') return '25';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['heavy.scala', 'light.scala']);
+    mockReadFileSync
+      .mockReturnValueOnce('test("test1") '.repeat(30))
+      .mockReturnValueOnce('test("test1")');
+
+    await run();
+
+    expect(mockCore.info).toHaveBeenCalledWith(
+      expect.stringContaining('Heavy test isolation: files with 25+ tests get own batch')
+    );
+    expect(mockCore.setOutput).toHaveBeenCalled();
+  });
+
+  it('should include testCount in matrix output for test-count mode', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'test-count';
+      if (key === 'tests-per-job') return '50';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['test1.scala', 'test2.scala']);
+    mockReadFileSync.mockReturnValue('test("test1") test("test2")');
+
+    await run();
+
+    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
+    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
+    expect(matrixCall).toBeDefined();
+    const matrix = JSON.parse(matrixCall![1] as string);
+    if (matrix.length > 0) {
+      expect(matrix[0]).toHaveProperty('project');
+      expect(matrix[0]).toHaveProperty('batch');
+    }
+  });
+
+  it('should include files array in matrix output for test-count mode', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'test-count';
+      if (key === 'tests-per-job') return '50';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['test1.scala', 'test2.scala']);
+    mockReadFileSync.mockReturnValue('test("test1") test("test2")');
+
+    await run();
+
+    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
+    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
+    expect(matrixCall).toBeDefined();
+    const matrix = JSON.parse(matrixCall![1] as string);
+    if (matrix.length > 0 && matrix[0].files) {
+      expect(Array.isArray(matrix[0].files)).toBe(true);
+      expect(matrix[0].files.length).toBeGreaterThan(0);
+      matrix[0].files.forEach((file: unknown) => {
+        expect(typeof file).toBe('string');
+        expect(file).not.toContain('..');
+      });
+    }
+  });
+
+  it('should not include files array in file-count mode', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'file-count';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['file1.ts', 'file2.ts']);
+
+    await run();
+
+    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
+    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
+    expect(matrixCall).toBeDefined();
+    const matrix = JSON.parse(matrixCall![1] as string);
+    if (matrix.length > 0) {
+      expect(matrix[0]).not.toHaveProperty('files');
+      expect(matrix[0]).not.toHaveProperty('testCount');
+    }
+  });
+
+  it('should handle max-tests-per-file disabled (0)', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'test-count';
+      if (key === 'tests-per-job') return '50';
+      if (key === 'max-tests-per-file') return '0';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['heavy.scala', 'light.scala']);
+    mockReadFileSync
+      .mockReturnValueOnce('test("test1") '.repeat(30))
+      .mockReturnValueOnce('test("test1")');
+
+    await run();
+
+    expect(mockCore.setOutput).toHaveBeenCalled();
+    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
+    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
+    const matrix = JSON.parse(matrixCall![1] as string);
+    expect(matrix.length).toBeGreaterThan(0);
+  });
+
+  it('should handle very large max-tests-per-file value', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'test-count';
+      if (key === 'tests-per-job') return '50';
+      if (key === 'max-tests-per-file') return '1000';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['file1.scala', 'file2.scala']);
+    mockReadFileSync.mockReturnValue('test("test1")');
+
+    await run();
+
+    expect(mockCore.setOutput).toHaveBeenCalled();
+  });
+
+  it('should ensure files array contains only valid paths', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'test-count';
+      if (key === 'tests-per-job') return '50';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['valid.scala']);
+    mockReadFileSync.mockReturnValue('test("test")');
+
+    await run();
+
+    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
+    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
+    const matrix = JSON.parse(matrixCall![1] as string);
+    matrix.forEach((entry: { files?: string[] }) => {
+      if (entry.files) {
+        entry.files.forEach((file: string) => {
+          expect(file).not.toContain('..');
+          expect(file).not.toMatch(/^\/|^[A-Z]:/);
+        });
+      }
+    });
+  });
+
+  it('should properly JSON serialize files array with special characters', async () => {
+    mockCore.getInput.mockImplementation((key: string) => {
+      if (key === 'projects') return '["project1"]';
+      if (key === 'mode') return 'test-count';
+      if (key === 'tests-per-job') return '50';
+      return '';
+    });
+
+    mockGlob.mockResolvedValue(['test "file".scala', "test'file.scala"]);
+    mockReadFileSync.mockReturnValue('test("test")');
+
+    await run();
+
+    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
+    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
+    expect(matrixCall).toBeDefined();
+    const matrixJson = matrixCall![1] as string;
+    expect(() => JSON.parse(matrixJson)).not.toThrow();
+    const matrix = JSON.parse(matrixJson);
+    expect(matrix.length).toBeGreaterThan(0);
   });
 
   it('should reject project names with path traversal', async () => {

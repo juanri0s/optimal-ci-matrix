@@ -1,7 +1,7 @@
 import require$$0 from "os";
 import require$$0$1 from "crypto";
-import require$$1, { realpathSync as realpathSync$1, readlinkSync, readdirSync, readdir as readdir$1, lstatSync, statSync } from "fs";
-import require$$1$5, { join, resolve } from "path";
+import require$$1, { realpathSync as realpathSync$1, readlinkSync, readdirSync, readdir as readdir$1, lstatSync, statSync, readFileSync } from "fs";
+import require$$1$5, { join, resolve, relative } from "path";
 import require$$2 from "http";
 import require$$3 from "https";
 import require$$0$4 from "net";
@@ -25584,10 +25584,10 @@ class Ignore {
   ignored(p) {
     const fullpath = p.fullpath();
     const fullpaths = `${fullpath}/`;
-    const relative = p.relative() || ".";
-    const relatives = `${relative}/`;
+    const relative2 = p.relative() || ".";
+    const relatives = `${relative2}/`;
     for (const m of this.relative) {
-      if (m.match(relative) || m.match(relatives))
+      if (m.match(relative2) || m.match(relatives))
         return true;
     }
     for (const m of this.absolute) {
@@ -25598,9 +25598,9 @@ class Ignore {
   }
   childrenIgnored(p) {
     const fullpath = p.fullpath() + "/";
-    const relative = (p.relative() || ".") + "/";
+    const relative2 = (p.relative() || ".") + "/";
     for (const m of this.relativeChildren) {
-      if (m.match(relative))
+      if (m.match(relative2))
         return true;
     }
     for (const m of this.absoluteChildren) {
@@ -26408,6 +26408,16 @@ const glob = Object.assign(glob_, {
   unescape
 });
 glob.glob = glob;
+function isValidPath(path2, baseDir) {
+  try {
+    const resolved = resolve(baseDir, path2);
+    const baseResolved = resolve(baseDir);
+    const relativePath = relative(baseResolved, resolved);
+    return !relativePath.startsWith("..") && !relativePath.includes("..");
+  } catch {
+    return false;
+  }
+}
 async function countProjectFiles(projectPath, filePatterns) {
   const allFiles = /* @__PURE__ */ new Set();
   const cwd = process.cwd();
@@ -26432,6 +26442,9 @@ async function countProjectFiles(projectPath, filePatterns) {
       files.forEach((file2) => {
         try {
           const fullPath = resolve(cwd, file2);
+          if (!isValidPath(file2, cwd)) {
+            return;
+          }
           const stats = statSync(fullPath);
           if (stats.isFile()) {
             allFiles.add(file2);
@@ -26439,17 +26452,182 @@ async function countProjectFiles(projectPath, filePatterns) {
         } catch {
         }
       });
-    } catch (error) {
-      coreExports.warning(`Failed to match pattern ${pattern} in ${projectPath}: ${error}`);
+    } catch {
     }
   }
   return allFiles.size;
 }
-function calculateOptimalJobs(fileCount, filesPerJob, minJobs, maxJobs) {
-  if (fileCount === 0) {
+function countTestsInFile(filePath, language) {
+  const cwd = process.cwd();
+  const fullPath = resolve(cwd, filePath);
+  if (!isValidPath(filePath, cwd)) {
+    return 0;
+  }
+  try {
+    const stats = statSync(fullPath);
+    if (!stats.isFile()) {
+      return 0;
+    }
+    const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    if (stats.size > MAX_FILE_SIZE) {
+      return 1;
+    }
+    const content = readFileSync(fullPath, "utf-8");
+    switch (language) {
+      case "scala":
+        const scalaPattern = /(?:^|\s)(?:test\s*\(|it\s*\(|should\s*\(|in\s*\{|property\s*\()/gm;
+        const scalaMatches = content.match(scalaPattern);
+        return Math.max(1, scalaMatches ? scalaMatches.length : 1);
+      case "typescript":
+      case "javascript":
+        const jsPattern = /(?:^|\s)(?:test\s*\(|it\s*\(|describe\s*\()/gm;
+        const jsMatches = content.match(jsPattern);
+        return Math.max(1, jsMatches ? jsMatches.length : 1);
+      case "python":
+        const pythonPattern = /(?:^|\s)def\s+test\w*\(|@pytest\.mark\./gm;
+        const pythonMatches = content.match(pythonPattern);
+        return Math.max(1, pythonMatches ? pythonMatches.length : 1);
+      case "go":
+        const goPattern = /func\s+(Test|Benchmark|Fuzz)\w+\s*\(/gm;
+        const goMatches = content.match(goPattern);
+        return Math.max(1, goMatches ? goMatches.length : 1);
+      default:
+        return 1;
+    }
+  } catch {
+    return 1;
+  }
+}
+function detectLanguage(filePath) {
+  const ext2 = filePath.split(".").pop()?.toLowerCase() || "";
+  switch (ext2) {
+    case "scala":
+      return "scala";
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "js":
+    case "jsx":
+      return "javascript";
+    case "py":
+      return "python";
+    case "go":
+      return "go";
+    default:
+      return "unknown";
+  }
+}
+async function collectProjectTestFiles(projectPath, filePatterns) {
+  const allFiles = /* @__PURE__ */ new Set();
+  const fileTests = [];
+  const cwd = process.cwd();
+  if (!isValidPath(projectPath, cwd)) {
+    return [];
+  }
+  for (const pattern of filePatterns) {
+    const fullPattern = join(projectPath, pattern);
+    try {
+      const files = await glob(fullPattern, {
+        ignore: [
+          "**/node_modules/**",
+          "**/target/**",
+          "**/.git/**",
+          "**/dist/**",
+          "**/build/**",
+          "**/.next/**",
+          "**/.nuxt/**",
+          "**/.svelte-kit/**"
+        ],
+        absolute: false,
+        nodir: true,
+        cwd
+      });
+      files.forEach((file2) => {
+        try {
+          if (!isValidPath(file2, cwd)) {
+            return;
+          }
+          const fullPath = resolve(cwd, file2);
+          const stats = statSync(fullPath);
+          if (stats.isFile() && !allFiles.has(file2)) {
+            allFiles.add(file2);
+            const language = detectLanguage(file2);
+            const testCount = countTestsInFile(file2, language);
+            fileTests.push({ path: file2, testCount });
+          }
+        } catch {
+        }
+      });
+    } catch {
+    }
+  }
+  return fileTests;
+}
+async function countProjectTests(projectPath, filePatterns) {
+  const fileTests = await collectProjectTestFiles(projectPath, filePatterns);
+  return fileTests.reduce((sum, file2) => sum + file2.testCount, 0);
+}
+function calculateBatchesWithBinPacking(fileTests, maxTestsPerBatch, maxTestsPerFile, minJobs, maxJobs) {
+  if (fileTests.length === 0) {
+    return Array.from({ length: minJobs }, () => ({ testCount: 0, files: [] }));
+  }
+  const batches = [];
+  const regularFiles = [];
+  const heavyFiles = [];
+  for (const file2 of fileTests) {
+    if (maxTestsPerFile > 0 && file2.testCount >= maxTestsPerFile) {
+      heavyFiles.push(file2);
+    } else {
+      regularFiles.push(file2);
+    }
+  }
+  regularFiles.sort((a, b) => b.testCount - a.testCount);
+  for (const heavyFile of heavyFiles) {
+    batches.push({ testCount: heavyFile.testCount, files: [heavyFile.path] });
+  }
+  for (const file2 of regularFiles) {
+    let minBatchIdx = 0;
+    let minBatchTests = batches.length > 0 ? batches[0].testCount : 0;
+    for (let i = 1; i < batches.length; i++) {
+      if (batches[i].testCount < minBatchTests) {
+        minBatchTests = batches[i].testCount;
+        minBatchIdx = i;
+      }
+    }
+    if (batches.length === 0 || minBatchTests + file2.testCount > maxTestsPerBatch) {
+      batches.push({ testCount: file2.testCount, files: [file2.path] });
+    } else {
+      batches[minBatchIdx].testCount += file2.testCount;
+      batches[minBatchIdx].files.push(file2.path);
+    }
+  }
+  const jobCount = Math.max(minJobs, Math.min(maxJobs, batches.length));
+  if (batches.length < jobCount) {
+    while (batches.length < jobCount) {
+      batches.push({ testCount: 0, files: [] });
+    }
+  } else if (batches.length > jobCount) {
+    while (batches.length > jobCount) {
+      const lastBatch = batches.pop();
+      let minBatchIdx = 0;
+      let minBatchTests = batches[0].testCount;
+      for (let i = 1; i < batches.length; i++) {
+        if (batches[i].testCount < minBatchTests) {
+          minBatchTests = batches[i].testCount;
+          minBatchIdx = i;
+        }
+      }
+      batches[minBatchIdx].testCount += lastBatch.testCount;
+      batches[minBatchIdx].files.push(...lastBatch.files);
+    }
+  }
+  return batches;
+}
+function calculateOptimalJobs(count, itemsPerJob, minJobs, maxJobs) {
+  if (count === 0) {
     return minJobs;
   }
-  const calculatedJobs = Math.ceil(fileCount / filesPerJob);
+  const calculatedJobs = Math.ceil(count / itemsPerJob);
   const jobs = Math.max(minJobs, Math.min(maxJobs, calculatedJobs));
   return jobs;
 }
@@ -26457,10 +26635,16 @@ function generateMatrix(projectJobs) {
   const matrix = [];
   for (const projectInfo of projectJobs) {
     for (let batch = 1; batch <= projectInfo.jobCount; batch++) {
-      matrix.push({
+      const entry = {
         project: projectInfo.project,
         batch
-      });
+      };
+      if (projectInfo.batches && projectInfo.batches[batch - 1]) {
+        const batchInfo = projectInfo.batches[batch - 1];
+        entry.testCount = batchInfo.testCount;
+        entry.files = batchInfo.files;
+      }
+      matrix.push(entry);
     }
   }
   return matrix;
@@ -26468,13 +26652,41 @@ function generateMatrix(projectJobs) {
 async function run() {
   try {
     const projectsInput = coreExports.getInput("projects", { required: true });
-    const basePath = coreExports.getInput("base-path") || ".";
-    const filesPerJob = parseInt(coreExports.getInput("files-per-job") || "50", 10);
+    const basePathInput = coreExports.getInput("base-path") || ".";
+    const mode = coreExports.getInput("mode") || "file-count";
+    const cwd = process.cwd();
+    if (basePathInput.length > 512 || !isValidPath(basePathInput, cwd)) {
+      throw new Error("Invalid base-path");
+    }
+    const basePath = basePathInput;
+    const filesPerJobInput = coreExports.getInput("files-per-job");
+    const testsPerJobInput = coreExports.getInput("tests-per-job");
+    const filesPerJob = parseInt(filesPerJobInput || "50", 10);
+    const testsPerJob = parseInt(testsPerJobInput || "100", 10);
     const minJobs = parseInt(coreExports.getInput("min-jobs") || "1", 10);
     const maxJobs = parseInt(coreExports.getInput("max-jobs") || "10", 10);
+    const maxTestsPerFileInput = coreExports.getInput("max-tests-per-file");
+    const maxTestsPerFile = maxTestsPerFileInput ? parseInt(maxTestsPerFileInput, 10) : 0;
     const filePatternsInput = coreExports.getInput("file-patterns") || "**/*";
+    if (mode !== "file-count" && mode !== "test-count") {
+      throw new Error('mode must be either "file-count" or "test-count"');
+    }
+    if (filesPerJobInput !== "" && testsPerJobInput !== "") {
+      if (mode === "file-count") {
+        coreExports.warning(
+          "Both files-per-job and tests-per-job were provided. Using files-per-job (test-count mode uses tests-per-job)."
+        );
+      } else {
+        coreExports.warning(
+          "Both files-per-job and tests-per-job were provided. Using tests-per-job (file-count mode uses files-per-job)."
+        );
+      }
+    }
     if (isNaN(filesPerJob) || filesPerJob < 1) {
       throw new Error("files-per-job must be a positive integer");
+    }
+    if (isNaN(testsPerJob) || testsPerJob < 1) {
+      throw new Error("tests-per-job must be a positive integer");
     }
     if (isNaN(minJobs) || minJobs < 1) {
       throw new Error("min-jobs must be a positive integer");
@@ -26488,6 +26700,9 @@ async function run() {
     if (maxJobs > 100) {
       throw new Error("max-jobs cannot exceed 100");
     }
+    if (maxTestsPerFileInput !== "" && (isNaN(maxTestsPerFile) || maxTestsPerFile < 0)) {
+      throw new Error("max-tests-per-file must be a non-negative integer");
+    }
     let projects;
     try {
       projects = JSON.parse(projectsInput);
@@ -26499,16 +26714,42 @@ async function run() {
         coreExports.setOutput("matrix", JSON.stringify([]));
         return;
       }
+      if (projects.length > 100) {
+        throw new Error("Too many projects (max 100)");
+      }
+      for (const project of projects) {
+        if (typeof project !== "string" || project.length === 0 || project.length > 256) {
+          throw new Error("Invalid project name");
+        }
+        if (project.includes("..") || project.includes("/") || project.includes("\\")) {
+          throw new Error("Invalid project name");
+        }
+      }
     } catch (error) {
-      throw new Error(`Failed to parse projects JSON: ${error}`);
+      throw new Error(
+        `Failed to parse projects JSON: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
     const filePatterns = filePatternsInput.split(",").map((p) => p.trim()).filter((p) => p.length > 0);
     if (filePatterns.length === 0) {
       throw new Error("At least one file pattern must be provided");
     }
+    for (const pattern of filePatterns) {
+      if (pattern.length > 512) {
+        throw new Error("File pattern too long");
+      }
+    }
     coreExports.info(`Analyzing ${projects.length} project(s) for optimal job splitting`);
     coreExports.info(`Base path: ${basePath}`);
-    coreExports.info(`Target files per job: ${filesPerJob}`);
+    coreExports.info(`Mode: ${mode}`);
+    if (mode === "file-count") {
+      coreExports.info(`Target files per job: ${filesPerJob}`);
+    } else {
+      coreExports.info(`Target tests per job: ${testsPerJob}`);
+      if (maxTestsPerFile > 0) {
+        coreExports.info(`Heavy test isolation: files with ${maxTestsPerFile}+ tests get own batch`);
+      }
+    }
     coreExports.info(`Job range: ${minJobs}-${maxJobs} per project`);
     coreExports.info(`File patterns: ${filePatterns.join(", ")}`);
     const projectJobs = [];
@@ -26517,20 +26758,44 @@ async function run() {
       coreExports.info(`
 Analyzing project: ${project}`);
       const fileCount = await countProjectFiles(projectPath, filePatterns);
-      const jobCount = calculateOptimalJobs(
-        fileCount,
-        filesPerJob,
-        minJobs,
-        maxJobs
-      );
-      projectJobs.push({
+      let count;
+      let itemsPerJob;
+      let batches;
+      if (mode === "test-count") {
+        const fileTests = await collectProjectTestFiles(projectPath, filePatterns);
+        count = fileTests.reduce((sum, file2) => sum + file2.testCount, 0);
+        itemsPerJob = testsPerJob;
+        batches = calculateBatchesWithBinPacking(
+          fileTests,
+          testsPerJob,
+          maxTestsPerFile,
+          minJobs,
+          maxJobs
+        );
+      } else {
+        count = fileCount;
+        itemsPerJob = filesPerJob;
+      }
+      const jobCount = batches ? batches.length : calculateOptimalJobs(count, itemsPerJob, minJobs, maxJobs);
+      const projectInfo = {
         project,
         fileCount,
         jobCount
-      });
-      coreExports.info(
-        `  Files: ${fileCount}, Jobs: ${jobCount} (${fileCount > 0 ? Math.ceil(fileCount / jobCount) : 0} files/job)`
-      );
+      };
+      if (mode === "test-count") {
+        projectInfo.testCount = count;
+        projectInfo.batches = batches;
+      }
+      projectJobs.push(projectInfo);
+      if (mode === "test-count" && batches) {
+        const batchCounts = batches.map((b) => b.testCount).join(", ");
+        coreExports.info(
+          `  Files: ${fileCount}, Tests: ${count}, Jobs: ${jobCount} (batch test counts: ${batchCounts})`
+        );
+      } else {
+        const itemsPerJobValue = count > 0 ? Math.ceil(count / jobCount) : 0;
+        coreExports.info(`  Files: ${fileCount}, Jobs: ${jobCount} (~${itemsPerJobValue} files/job)`);
+      }
     }
     const matrix = generateMatrix(projectJobs);
     const matrixJson = JSON.stringify(matrix);
@@ -26542,7 +26807,14 @@ Generated matrix with ${matrix.length} entry/entries:`);
     coreExports.info(`
 Matrix preview:`);
     for (const entry of matrix.slice(0, 10)) {
-      coreExports.info(`  - project: ${entry.project}, batch: ${entry.batch}`);
+      let preview = `  - project: ${entry.project}, batch: ${entry.batch}`;
+      if (entry.testCount !== void 0) {
+        preview += `, testCount: ${entry.testCount}`;
+      }
+      if (entry.files && entry.files.length > 0) {
+        preview += `, files: ${entry.files.length}`;
+      }
+      coreExports.info(preview);
     }
     if (matrix.length > 10) {
       coreExports.info(`  ... and ${matrix.length - 10} more entries`);
@@ -26557,8 +26829,11 @@ if (!process.env.VITEST) {
   void run();
 }
 export {
+  calculateBatchesWithBinPacking,
   calculateOptimalJobs,
+  collectProjectTestFiles,
   countProjectFiles,
+  countProjectTests,
   generateMatrix,
   run
 };

@@ -1,12 +1,14 @@
 # Optimal CI Matrix
 
-GitHub Action that generates optimal CI matrix for parallel job execution. Automatically determines the optimal number of parallel jobs based on file count, allowing your CI to scale dynamically without manual configuration. Works with single projects or monorepos.
+GitHub Action that generates optimal CI matrix for parallel job execution. Automatically determines the optimal number of parallel jobs based on file count or test count, allowing your CI to scale dynamically without manual configuration. Works with single projects or monorepos.
 
 ## Features
 
 - **Language Agnostic**: Works with any CI setup, not tied to a specific language or framework
 - **Single Project or Monorepo**: Handles both single projects and multiple projects with different parallelization requirements
-- **Dynamic Job Splitting**: Automatically calculates optimal parallel jobs based on file count
+- **Dynamic Job Splitting**: Automatically calculates optimal parallel jobs based on file count or test count
+- **Bin-Packing Algorithm**: Uses optimal distribution algorithm in test-count mode for balanced batches
+- **Heavy Test Isolation**: Automatically isolates large test files to prevent bottlenecks
 - **Flexible Configuration**: Customize file patterns, job limits, and base paths
 
 ## Usage
@@ -25,7 +27,7 @@ jobs:
 
       - name: Generate Optimal Matrix
         id: set-matrix
-        uses: ./
+        uses: juanri0s/optimal-ci-matrix@v1 # Pin to exact commit SHA for production
         with:
           projects: '["."]'
           files-per-job: 50
@@ -53,7 +55,7 @@ jobs:
 
       - name: Generate Optimal Matrix
         id: set-matrix
-        uses: ./
+        uses: juanri0s/optimal-ci-matrix@v1 # Pin to exact commit SHA for production
         with:
           projects: '["project1", "project2", "project3"]'
           files-per-job: 50
@@ -83,12 +85,13 @@ jobs:
 
       - name: Generate Optimal Matrix
         id: set-matrix
-        uses: ./
+        uses: juanri0s/optimal-ci-matrix@v1 # Pin to exact commit SHA for production
         with:
           projects: '["project1", "project2"]'
           base-path: .
           mode: test-count
           tests-per-job: 100
+          max-tests-per-file: 25
           min-jobs: 1
           max-jobs: 15
           file-patterns: '**/*Test.scala,**/*Spec.scala'
@@ -115,7 +118,7 @@ jobs:
 
       - name: Generate Optimal Matrix
         id: set-matrix
-        uses: ./
+        uses: juanri0s/optimal-ci-matrix@v1 # Pin to exact commit SHA for production
         with:
           projects: '["frontend", "backend", "shared"]'
           base-path: packages
@@ -146,7 +149,7 @@ jobs:
 
       - name: Generate Optimal Matrix
         id: set-matrix
-        uses: ./
+        uses: juanri0s/optimal-ci-matrix@v1 # Pin to exact commit SHA for production
         with:
           projects: '["api", "worker", "shared"]'
           base-path: services
@@ -175,7 +178,7 @@ jobs:
 
       - name: Generate Optimal Matrix
         id: set-matrix
-        uses: ./
+        uses: juanri0s/optimal-ci-matrix@v1 # Pin to exact commit SHA for production
         with:
           projects: '["cmd/api", "cmd/worker", "internal"]'
           base-path: .
@@ -192,22 +195,23 @@ jobs:
 
 ## Inputs
 
-| Input           | Description                                                                                                                                                         | Required | Default      |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------ |
-| `projects`      | JSON array of project names/paths to include in the matrix. For single project use `["."]`, for multiple projects use `["project1", "project2"]`                    | Yes      | -            |
-| `base-path`     | Base path for project directories. For single project, leave as `.`                                                                                                 | No       | `.`          |
-| `mode`          | Counting mode: `"file-count"` (count files) or `"test-count"` (count tests within files). Test-count is more accurate when files can have varying numbers of tests. | No       | `file-count` |
-| `files-per-job` | Target number of files per job when using file-count mode                                                                                                           | No       | `50`         |
-| `tests-per-job` | Target number of tests per job when using test-count mode                                                                                                           | No       | `100`        |
-| `min-jobs`      | Minimum number of parallel jobs per project                                                                                                                         | No       | `1`          |
-| `max-jobs`      | Maximum number of parallel jobs per project                                                                                                                         | No       | `10`         |
-| `file-patterns` | Comma-separated glob patterns to count files for job splitting                                                                                                      | No       | `**/*`       |
+| Input                | Description                                                                                                                                                         | Required | Default      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------ |
+| `projects`           | JSON array of project names/paths to include in the matrix. For single project use `["."]`, for multiple projects use `["project1", "project2"]`                    | Yes      | -            |
+| `base-path`          | Base path for project directories. For single project, leave as `.`                                                                                                 | No       | `.`          |
+| `mode`               | Counting mode: `"file-count"` (count files) or `"test-count"` (count tests within files). Test-count is more accurate when files can have varying numbers of tests. | No       | `file-count` |
+| `files-per-job`      | Target number of files per job when using file-count mode                                                                                                           | No       | `50`         |
+| `tests-per-job`      | Target number of tests per job when using test-count mode                                                                                                           | No       | `100`        |
+| `max-tests-per-file` | Threshold for isolating heavy test files. Files with this many or more tests get their own batch. Only used in test-count mode. Set to 0 to disable.                | No       | `0`          |
+| `min-jobs`           | Minimum number of parallel jobs per project                                                                                                                         | No       | `1`          |
+| `max-jobs`           | Maximum number of parallel jobs per project                                                                                                                         | No       | `10`         |
+| `file-patterns`      | Comma-separated glob patterns to count files for job splitting                                                                                                      | No       | `**/*`       |
 
 ## Outputs
 
-| Output   | Description                                                                                                                                                 |
-| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `matrix` | JSON array of matrix entries with project and batch dimensions (e.g., `[{"project":"p1","batch":1},{"project":"p1","batch":2},{"project":"p2","batch":1}]`) |
+| Output   | Description                                                                                                                                                                                                                                                                                              |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `matrix` | JSON array of matrix entries with project and batch dimensions. In test-count mode, entries include `testCount` and `files` fields indicating tests and file paths in that batch. (e.g., `[{"project":"p1","batch":1},{"project":"p1","batch":2,"testCount":45,"files":["file1.scala","file2.scala"]}]`) |
 
 ## How It Works
 
@@ -215,9 +219,10 @@ jobs:
    - **File-count mode** (default): Counts files
    - **Test-count mode**: Counts actual tests within files by parsing test constructs
 2. **Job Calculation**: Calculates optimal number of parallel jobs based on:
-   - Count (files or tests) ÷ items-per-job (rounded up)
+   - **File-count mode**: Simple division (count ÷ items-per-job, rounded up)
+   - **Test-count mode**: Bin-packing algorithm for better distribution, with optional heavy test isolation
    - Constrained by `min-jobs` and `max-jobs`
-3. **Matrix Generation**: Creates a GitHub Actions matrix with entries for each project-batch combination. For single projects, the `project` field will be the path you provided (e.g., `"."`).
+3. **Matrix Generation**: Creates a GitHub Actions matrix with entries for each project-batch combination. In test-count mode, each entry includes `testCount` indicating the number of tests and `files` array indicating which files belong to that batch.
 
 ### Counting Modes
 
@@ -230,8 +235,10 @@ jobs:
 **Test-Count Mode**:
 
 - Counts actual tests in files (parses test constructs)
+- Uses bin-packing algorithm for optimal test distribution across batches
 - Good for: Projects where files can have varying numbers of tests (e.g., 1-100+ tests per file)
-- More accurate: Better reflects actual execution time
+- More accurate: Better reflects actual execution time and provides balanced batches
+- **Heavy test isolation**: When `max-tests-per-file` is set, files with that many or more tests get their own batch to prevent bottlenecks
 - **Note**: Each parallel job may need to compile the project independently. Consider:
   - Using incremental compilation if your build system supports it
   - Caching build artifacts between jobs
@@ -257,27 +264,30 @@ Results:
 
 Given:
 
-- `project1` has 50 files with 80 total tests
-- `project2` has 30 files with 250 total tests
+- `project1` has files with 80 total tests distributed across files
+- `project2` has files with 250 total tests distributed across files
 - `tests-per-job: 100`
+- `max-tests-per-file: 25`
 - `min-jobs: 1`
 - `max-jobs: 10`
 
-Results:
+Results (using bin-packing algorithm):
 
-- `project1`: 80 ÷ 100 = 0.8 → 1 job (minimum)
-- `project2`: 250 ÷ 100 = 2.5 → 3 jobs
+- `project1`: 80 tests → 1 batch (minimum)
+- `project2`: 250 tests → 3 batches (distributed using bin-packing for optimal balance)
 
 Matrix:
 
 ```json
 [
-  { "project": "project1", "batch": 1 },
-  { "project": "project2", "batch": 1 },
-  { "project": "project2", "batch": 2 },
-  { "project": "project2", "batch": 3 }
+  { "project": "project1", "batch": 1, "testCount": 80, "files": ["file1.scala", "file2.scala"] },
+  { "project": "project2", "batch": 1, "testCount": 95, "files": ["file3.scala", "file4.scala"] },
+  { "project": "project2", "batch": 2, "testCount": 85, "files": ["file5.scala"] },
+  { "project": "project2", "batch": 3, "testCount": 70, "files": ["file6.scala", "file7.scala"] }
 ]
 ```
+
+**Note**: The bin-packing algorithm distributes tests across batches to balance execution time. Each batch includes `testCount` (number of tests) and `files` (array of file paths) for visibility and debugging.
 
 ## Use Cases
 
@@ -324,9 +334,19 @@ No need to update your workflow file as projects evolve - the action handles it 
 
 The action works with any file patterns you specify via the `file-patterns` input. Use patterns that match your project's test file naming conventions.
 
-### Using Batch Numbers
+### Using Batch Numbers and Matrix Fields
 
-The `batch` number in the matrix can be used to split work within each project. How you use it depends on your test framework and requirements.
+The matrix entries include:
+
+- **`project`**: Project name/path
+- **`batch`**: Batch number (1-indexed) for splitting work within each project
+- **`testCount`** (test-count mode only): Number of tests in this batch
+- **`files`** (test-count mode only): Array of file paths belonging to this batch
+
+**File-count mode** entries only include `project` and `batch`.  
+**Test-count mode** entries include `project`, `batch`, `testCount`, and `files`.
+
+How you use these fields depends on your test framework and requirements. The `files` array can be used to filter which tests to run in each batch.
 
 ## Tips & Best Practices
 
@@ -342,6 +362,16 @@ The `batch` number in the matrix can be used to split work within each project. 
   - Test execution time varies significantly
   - Your build system supports incremental compilation or test filtering
   - You can cache build artifacts or pre-compile in a separate job
+  - You want optimal test distribution using bin-packing algorithm
+
+### Using `max-tests-per-file`
+
+When using test-count mode, you can set `max-tests-per-file` to isolate large test files:
+
+- **Purpose**: Prevents bottlenecks from files with many tests
+- **How it works**: Files with `max-tests-per-file` or more tests get their own batch
+- **Example**: With `max-tests-per-file: 25`, a file with 30 tests gets its own batch
+- **Recommendation**: Set to 25-50 for most projects, or 0 to disable
 
 ### Choosing `files-per-job`
 
@@ -376,8 +406,6 @@ corepack enable
 pnpm install
 pnpm run build
 ```
-
-When using this action from the same repository (`uses: ./`), build it first or commit the `dist/` directory.
 
 ## Development
 
