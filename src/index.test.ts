@@ -1331,8 +1331,6 @@ describe('run', () => {
     expect(mockCore.setFailed).toHaveBeenCalledWith('max-jobs must be a positive integer');
   });
 
-
-
   it('should reject project names with path traversal', async () => {
     mockCore.getInput.mockImplementation((key: string) => {
       if (key === 'projects') return '["../etc/passwd"]';
@@ -1437,5 +1435,4 @@ describe('run', () => {
       expect.stringContaining('File pattern too long')
     );
   });
-
 });

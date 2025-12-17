@@ -108,19 +108,19 @@ jobs:
 
 ## Inputs
 
-| Input           | Description                                                                                                                                    | Required | Default |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
+| Input           | Description                                                                                                                                         | Required | Default |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------- |
 | `projects`      | JSON array of project names or paths to include in the matrix. For single project use `["."]`, for multiple projects use `["project1", "project2"]` | Yes      | -       |
-| `base-path`     | Base path for project directories. Use "." for current directory or specify a relative path to your projects.                                | No       | `.`     |
-| `files-per-job` | Target number of files per job. Used to calculate optimal batch count. Adjust based on your project size and desired parallelism.            | No       | `50`    |
-| `min-jobs`      | Minimum number of parallel jobs per project. Ensures minimum parallelism even for small projects.                                            | No       | `1`     |
-| `max-jobs`       | Maximum number of parallel jobs per project. Prevents excessive job creation for very large projects.                                          | No       | `10`    |
-| `file-patterns` | Comma-separated glob patterns to match files for counting. Use patterns that match your test files or files you want to parallelize.          | No       | `**/*`  |
+| `base-path`     | Base path for project directories. Use "." for current directory or specify a relative path to your projects.                                       | No       | `.`     |
+| `files-per-job` | Target number of files per job. Used to calculate optimal batch count. Adjust based on your project size and desired parallelism.                   | No       | `50`    |
+| `min-jobs`      | Minimum number of parallel jobs per project. Ensures minimum parallelism even for small projects.                                                   | No       | `1`     |
+| `max-jobs`      | Maximum number of parallel jobs per project. Prevents excessive job creation for very large projects.                                               | No       | `10`    |
+| `file-patterns` | Comma-separated glob patterns to match files for counting. Use patterns that match your test files or files you want to parallelize.                | No       | `**/*`  |
 
 ## Outputs
 
-| Output   | Description                                                                                                                                                                                                                                                                    |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Output   | Description                                                                                                                                                                                                                                                                                                                                                                     |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `matrix` | JSON array of matrix entries. Each entry contains `project` (project name/path), `batch` (batch number, 1-indexed), and `total_batches` (total number of batches for this project). Use `total_batches` to determine how many batches each project should be split into. Example: `[{"project":"p1","batch":1,"total_batches":3},{"project":"p1","batch":2,"total_batches":3}]` |
 
 ## How It Works

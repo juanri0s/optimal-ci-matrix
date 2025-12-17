@@ -1,5 +1,5 @@
 name: 'Optimal CI Matrix'
-description: 'Generate optimal CI matrix for parallel job execution. Calculates optimal batch counts per project based on file counts, enabling efficient parallelization across multiple projects.'
+description: 'Generate optimal CI matrix for parallel job execution. Calculates batch counts per project based on file counts.'
 author: 'juanri0s'
 inputs:
   projects:

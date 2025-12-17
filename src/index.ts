@@ -463,9 +463,7 @@ export async function run(): Promise<void> {
     core.info(`  Total jobs: ${matrix.length}`);
     core.info(`\nMatrix preview:`);
     for (const entry of matrix.slice(0, 10)) {
-      core.info(
-        `  - project: ${entry.project}, batch: ${entry.batch}/${entry.total_batches}`
-      );
+      core.info(`  - project: ${entry.project}, batch: ${entry.batch}/${entry.total_batches}`);
     }
     if (matrix.length > 10) {
       core.info(`  ... and ${matrix.length - 10} more entries`);
