@@ -558,7 +558,7 @@ describe('generateMatrix', () => {
     const projectJobs = [{ project: 'project1', fileCount: 10, jobCount: 1 }];
     const result = generateMatrix(projectJobs);
 
-    expect(result).toEqual([{ project: 'project1', batch: 1 }]);
+    expect(result).toEqual([{ project: 'project1', batch: 1, total_batches: 1 }]);
   });
 
   it('should generate matrix entries for single project with multiple batches', () => {
@@ -566,9 +566,9 @@ describe('generateMatrix', () => {
     const result = generateMatrix(projectJobs);
 
     expect(result).toEqual([
-      { project: 'project1', batch: 1 },
-      { project: 'project1', batch: 2 },
-      { project: 'project1', batch: 3 },
+      { project: 'project1', batch: 1, total_batches: 3 },
+      { project: 'project1', batch: 2, total_batches: 3 },
+      { project: 'project1', batch: 3, total_batches: 3 },
     ]);
   });
 
@@ -580,37 +580,16 @@ describe('generateMatrix', () => {
     const result = generateMatrix(projectJobs);
 
     expect(result).toEqual([
-      { project: 'project1', batch: 1 },
-      { project: 'project2', batch: 1 },
-      { project: 'project2', batch: 2 },
-      { project: 'project2', batch: 3 },
+      { project: 'project1', batch: 1, total_batches: 1 },
+      { project: 'project2', batch: 1, total_batches: 3 },
+      { project: 'project2', batch: 2, total_batches: 3 },
+      { project: 'project2', batch: 3, total_batches: 3 },
     ]);
   });
 
   it('should handle empty input', () => {
     const result = generateMatrix([]);
     expect(result).toEqual([]);
-  });
-
-  it('should include testCount and files when batches are provided', () => {
-    const projectJobs = [
-      {
-        project: 'project1',
-        fileCount: 10,
-        jobCount: 2,
-        testCount: 150,
-        batches: [
-          { testCount: 75, files: ['file1.scala', 'file2.scala'] },
-          { testCount: 75, files: ['file3.scala'] },
-        ],
-      },
-    ];
-    const result = generateMatrix(projectJobs);
-
-    expect(result).toEqual([
-      { project: 'project1', batch: 1, testCount: 75, files: ['file1.scala', 'file2.scala'] },
-      { project: 'project1', batch: 2, testCount: 75, files: ['file3.scala'] },
-    ]);
   });
 });
 
@@ -895,7 +874,7 @@ describe('run', () => {
 
     expect(mockCore.setOutput).toHaveBeenCalledWith(
       'matrix',
-      JSON.stringify([{ project: 'project1', batch: 1 }])
+      JSON.stringify([{ project: 'project1', batch: 1, total_batches: 1 }])
     );
   });
 
@@ -1170,7 +1149,7 @@ describe('run', () => {
     await run();
 
     expect(mockCore.info).toHaveBeenCalledWith(
-      expect.stringContaining('Files: 0, Jobs: 1 (~0 files/job)')
+      expect.stringContaining('Files: 0, Batches: 1 (~0 files/batch)')
     );
   });
 
@@ -1288,13 +1267,13 @@ describe('run', () => {
       return '';
     });
 
-    // Project has 100 files, should create 2 jobs (50 files/job)
+    // Project has 100 files, should create 2 batches (50 files/batch)
     mockGlob.mockResolvedValue(Array.from({ length: 100 }, (_, i) => `file${i}.ts`));
 
     await run();
 
     expect(mockCore.info).toHaveBeenCalledWith(
-      expect.stringContaining('Files: 100, Jobs: 2 (~50 files/job)')
+      expect.stringContaining('Files: 100, Batches: 2 (~50 files/batch)')
     );
   });
 
@@ -1352,243 +1331,7 @@ describe('run', () => {
     expect(mockCore.setFailed).toHaveBeenCalledWith('max-jobs must be a positive integer');
   });
 
-  it('should validate mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'invalid-mode';
-      return '';
-    });
 
-    await run();
-
-    expect(mockCore.setFailed).toHaveBeenCalledWith(
-      'mode must be either "file-count" or "test-count"'
-    );
-  });
-
-  it('should use test-count mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['Test1.scala', 'Test2.scala']);
-    mockReadFileSync.mockReturnValue('class Test { test("test1") {} test("test2") {} }');
-
-    await run();
-
-    expect(mockCore.setOutput).toHaveBeenCalled();
-    expect(mockCore.info).toHaveBeenCalledWith(expect.stringContaining('test-count'));
-  });
-
-  it('should validate tests-per-job', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'tests-per-job') return '0';
-      return '';
-    });
-
-    await run();
-
-    expect(mockCore.setFailed).toHaveBeenCalledWith('tests-per-job must be a positive integer');
-  });
-
-  it('should validate max-tests-per-file', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'max-tests-per-file') return '-1';
-      return '';
-    });
-
-    await run();
-
-    expect(mockCore.setFailed).toHaveBeenCalledWith(
-      'max-tests-per-file must be a non-negative integer'
-    );
-  });
-
-  it('should use max-tests-per-file in test-count mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      if (key === 'max-tests-per-file') return '25';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['heavy.scala', 'light.scala']);
-    mockReadFileSync
-      .mockReturnValueOnce('test("test1") '.repeat(30))
-      .mockReturnValueOnce('test("test1")');
-
-    await run();
-
-    expect(mockCore.info).toHaveBeenCalledWith(
-      expect.stringContaining('Heavy test isolation: files with 25+ tests get own batch')
-    );
-    expect(mockCore.setOutput).toHaveBeenCalled();
-  });
-
-  it('should include testCount in matrix output for test-count mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['test1.scala', 'test2.scala']);
-    mockReadFileSync.mockReturnValue('test("test1") test("test2")');
-
-    await run();
-
-    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
-    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
-    expect(matrixCall).toBeDefined();
-    const matrix = JSON.parse(matrixCall![1] as string);
-    if (matrix.length > 0) {
-      expect(matrix[0]).toHaveProperty('project');
-      expect(matrix[0]).toHaveProperty('batch');
-    }
-  });
-
-  it('should include files array in matrix output for test-count mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['test1.scala', 'test2.scala']);
-    mockReadFileSync.mockReturnValue('test("test1") test("test2")');
-
-    await run();
-
-    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
-    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
-    expect(matrixCall).toBeDefined();
-    const matrix = JSON.parse(matrixCall![1] as string);
-    if (matrix.length > 0 && matrix[0].files) {
-      expect(Array.isArray(matrix[0].files)).toBe(true);
-      expect(matrix[0].files.length).toBeGreaterThan(0);
-      matrix[0].files.forEach((file: unknown) => {
-        expect(typeof file).toBe('string');
-        expect(file).not.toContain('..');
-      });
-    }
-  });
-
-  it('should not include files array in file-count mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'file-count';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['file1.ts', 'file2.ts']);
-
-    await run();
-
-    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
-    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
-    expect(matrixCall).toBeDefined();
-    const matrix = JSON.parse(matrixCall![1] as string);
-    if (matrix.length > 0) {
-      expect(matrix[0]).not.toHaveProperty('files');
-      expect(matrix[0]).not.toHaveProperty('testCount');
-    }
-  });
-
-  it('should handle max-tests-per-file disabled (0)', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      if (key === 'max-tests-per-file') return '0';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['heavy.scala', 'light.scala']);
-    mockReadFileSync
-      .mockReturnValueOnce('test("test1") '.repeat(30))
-      .mockReturnValueOnce('test("test1")');
-
-    await run();
-
-    expect(mockCore.setOutput).toHaveBeenCalled();
-    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
-    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
-    const matrix = JSON.parse(matrixCall![1] as string);
-    expect(matrix.length).toBeGreaterThan(0);
-  });
-
-  it('should handle very large max-tests-per-file value', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      if (key === 'max-tests-per-file') return '1000';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['file1.scala', 'file2.scala']);
-    mockReadFileSync.mockReturnValue('test("test1")');
-
-    await run();
-
-    expect(mockCore.setOutput).toHaveBeenCalled();
-  });
-
-  it('should ensure files array contains only valid paths', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['valid.scala']);
-    mockReadFileSync.mockReturnValue('test("test")');
-
-    await run();
-
-    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
-    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
-    const matrix = JSON.parse(matrixCall![1] as string);
-    matrix.forEach((entry: { files?: string[] }) => {
-      if (entry.files) {
-        entry.files.forEach((file: string) => {
-          expect(file).not.toContain('..');
-          expect(file).not.toMatch(/^\/|^[A-Z]:/);
-        });
-      }
-    });
-  });
-
-  it('should properly JSON serialize files array with special characters', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'tests-per-job') return '50';
-      return '';
-    });
-
-    mockGlob.mockResolvedValue(['test "file".scala', "test'file.scala"]);
-    mockReadFileSync.mockReturnValue('test("test")');
-
-    await run();
-
-    const setOutputCalls = (mockCore.setOutput as ReturnType<typeof vi.fn>).mock.calls;
-    const matrixCall = setOutputCalls.find((call) => call[0] === 'matrix');
-    expect(matrixCall).toBeDefined();
-    const matrixJson = matrixCall![1] as string;
-    expect(() => JSON.parse(matrixJson)).not.toThrow();
-    const matrix = JSON.parse(matrixJson);
-    expect(matrix.length).toBeGreaterThan(0);
-  });
 
   it('should reject project names with path traversal', async () => {
     mockCore.getInput.mockImplementation((key: string) => {
@@ -1695,38 +1438,4 @@ describe('run', () => {
     );
   });
 
-  it('should warn when both files-per-job and tests-per-job are provided in file-count mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'files-per-job') return '50';
-      if (key === 'tests-per-job') return '100';
-      return '';
-    });
-    mockGlob.mockResolvedValue([]);
-
-    await run();
-
-    expect(mockCore.warning).toHaveBeenCalledWith(
-      expect.stringContaining('Both files-per-job and tests-per-job were provided')
-    );
-    expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Using files-per-job'));
-  });
-
-  it('should warn when both files-per-job and tests-per-job are provided in test-count mode', async () => {
-    mockCore.getInput.mockImplementation((key: string) => {
-      if (key === 'projects') return '["project1"]';
-      if (key === 'mode') return 'test-count';
-      if (key === 'files-per-job') return '50';
-      if (key === 'tests-per-job') return '100';
-      return '';
-    });
-    mockGlob.mockResolvedValue([]);
-
-    await run();
-
-    expect(mockCore.warning).toHaveBeenCalledWith(
-      expect.stringContaining('Both files-per-job and tests-per-job were provided')
-    );
-    expect(mockCore.warning).toHaveBeenCalledWith(expect.stringContaining('Using tests-per-job'));
-  });
 });

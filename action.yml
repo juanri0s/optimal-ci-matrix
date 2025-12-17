@@ -1,45 +1,33 @@
 name: 'Optimal CI Matrix'
-description: 'Generate optimal CI matrix for parallel job execution'
+description: 'Generate optimal CI matrix for parallel job execution. Calculates optimal batch counts per project based on file counts, enabling efficient parallelization across multiple projects.'
 author: 'juanri0s'
 inputs:
   projects:
-    description: 'JSON array of project names to include in the matrix (e.g., ["project1", "project2"])'
+    description: 'JSON array of project names or paths to include in the matrix (e.g., ["project1", "project2"] or ["."] for single project)'
     required: true
   base-path:
-    description: 'Base path for project directories (default: current directory)'
+    description: 'Base path for project directories. Use "." for current directory or specify a relative path to your projects.'
     required: false
     default: '.'
   files-per-job:
-    description: 'Target number of files per job (default: 50). Projects with more files will be split into multiple parallel jobs.'
+    description: 'Target number of files per job. Used to calculate optimal batch count. Adjust based on your project size and desired parallelism.'
     required: false
     default: '50'
   min-jobs:
-    description: 'Minimum number of parallel jobs per project (default: 1)'
+    description: 'Minimum number of parallel jobs per project. Ensures minimum parallelism even for small projects.'
     required: false
     default: '1'
   max-jobs:
-    description: 'Maximum number of parallel jobs per project (default: 10)'
+    description: 'Maximum number of parallel jobs per project. Prevents excessive job creation for very large projects.'
     required: false
     default: '10'
   file-patterns:
-    description: 'Comma-separated glob patterns to count files for job splitting (default: **/*)'
+    description: 'Comma-separated glob patterns to match files for counting. Use patterns that match your test files or files you want to parallelize.'
     required: false
     default: '**/*'
-  mode:
-    description: 'Counting mode: "file-count" (count files) or "test-count" (count tests within files). Test-count mode is more accurate when files can have varying numbers of tests. (default: file-count)'
-    required: false
-    default: 'file-count'
-  tests-per-job:
-    description: 'Target number of tests per job when using test-count mode. Only used when mode is "test-count". (default: 100)'
-    required: false
-    default: '100'
-  max-tests-per-file:
-    description: 'Threshold for isolating heavy test files. Files with this many or more tests get their own batch. Only used in test-count mode. Set to 0 to disable. (default: 0)'
-    required: false
-    default: '0'
 outputs:
   matrix:
-    description: 'JSON array of matrix entries with project and batch dimensions. In test-count mode, entries include testCount and files fields. (e.g., [{"project":"p1","batch":1},{"project":"p1","batch":2,"testCount":45,"files":["file1.scala","file2.scala"]}])'
+    description: 'JSON array of matrix entries. Each entry contains project name, batch number (1-indexed), and total_batches. Use total_batches to determine how many batches each project should be split into. Example: [{"project":"p1","batch":1,"total_batches":3},{"project":"p1","batch":2,"total_batches":3},{"project":"p1","batch":3,"total_batches":3}]'
 runs:
   using: 'node24'
   main: 'dist/index.js'

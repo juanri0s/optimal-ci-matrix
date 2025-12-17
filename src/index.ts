@@ -6,8 +6,7 @@ import { statSync, readFileSync } from 'fs';
 interface MatrixEntry {
   project: string;
   batch: number;
-  testCount?: number;
-  files?: string[];
+  total_batches: number;
 }
 
 interface FileTestInfo {
@@ -23,9 +22,7 @@ interface BatchInfo {
 interface ProjectJobInfo {
   project: string;
   fileCount: number;
-  testCount?: number;
   jobCount: number;
-  batches?: BatchInfo[];
 }
 
 function isValidPath(path: string, baseDir: string): boolean {
@@ -333,23 +330,18 @@ export function calculateOptimalJobs(
 }
 
 /**
- * Generates matrix entries for all projects with their batches
+ * Generates matrix entries for all projects with batch counts
  */
 export function generateMatrix(projectJobs: ProjectJobInfo[]): MatrixEntry[] {
   const matrix: MatrixEntry[] = [];
 
   for (const projectInfo of projectJobs) {
     for (let batch = 1; batch <= projectInfo.jobCount; batch++) {
-      const entry: MatrixEntry = {
+      matrix.push({
         project: projectInfo.project,
         batch,
-      };
-      if (projectInfo.batches && projectInfo.batches[batch - 1]) {
-        const batchInfo = projectInfo.batches[batch - 1];
-        entry.testCount = batchInfo.testCount;
-        entry.files = batchInfo.files;
-      }
-      matrix.push(entry);
+        total_batches: projectInfo.jobCount,
+      });
     }
   }
 
@@ -363,7 +355,6 @@ export async function run(): Promise<void> {
   try {
     const projectsInput = core.getInput('projects', { required: true });
     const basePathInput = core.getInput('base-path') || '.';
-    const mode = core.getInput('mode') || 'file-count';
     const cwd = process.cwd();
 
     if (basePathInput.length > 512 || !isValidPath(basePathInput, cwd)) {
@@ -371,38 +362,14 @@ export async function run(): Promise<void> {
     }
     const basePath = basePathInput;
     const filesPerJobInput = core.getInput('files-per-job');
-    const testsPerJobInput = core.getInput('tests-per-job');
     const filesPerJob = parseInt(filesPerJobInput || '50', 10);
-    const testsPerJob = parseInt(testsPerJobInput || '100', 10);
     const minJobs = parseInt(core.getInput('min-jobs') || '1', 10);
     const maxJobs = parseInt(core.getInput('max-jobs') || '10', 10);
-    const maxTestsPerFileInput = core.getInput('max-tests-per-file');
-    const maxTestsPerFile = maxTestsPerFileInput ? parseInt(maxTestsPerFileInput, 10) : 0;
     const filePatternsInput = core.getInput('file-patterns') || '**/*';
-
-    // Validate mode
-    if (mode !== 'file-count' && mode !== 'test-count') {
-      throw new Error('mode must be either "file-count" or "test-count"');
-    }
-
-    if (filesPerJobInput !== '' && testsPerJobInput !== '') {
-      if (mode === 'file-count') {
-        core.warning(
-          'Both files-per-job and tests-per-job were provided. Using files-per-job (test-count mode uses tests-per-job).'
-        );
-      } else {
-        core.warning(
-          'Both files-per-job and tests-per-job were provided. Using tests-per-job (file-count mode uses files-per-job).'
-        );
-      }
-    }
 
     // Validate inputs
     if (isNaN(filesPerJob) || filesPerJob < 1) {
       throw new Error('files-per-job must be a positive integer');
-    }
-    if (isNaN(testsPerJob) || testsPerJob < 1) {
-      throw new Error('tests-per-job must be a positive integer');
     }
     if (isNaN(minJobs) || minJobs < 1) {
       throw new Error('min-jobs must be a positive integer');
@@ -415,9 +382,6 @@ export async function run(): Promise<void> {
     }
     if (maxJobs > 100) {
       throw new Error('max-jobs cannot exceed 100');
-    }
-    if (maxTestsPerFileInput !== '' && (isNaN(maxTestsPerFile) || maxTestsPerFile < 0)) {
-      throw new Error('max-tests-per-file must be a non-negative integer');
     }
 
     let projects: string[];
@@ -462,17 +426,9 @@ export async function run(): Promise<void> {
       }
     }
 
-    core.info(`Analyzing ${projects.length} project(s) for optimal job splitting`);
+    core.info(`Analyzing ${projects.length} project(s) for optimal batch counts`);
     core.info(`Base path: ${basePath}`);
-    core.info(`Mode: ${mode}`);
-    if (mode === 'file-count') {
-      core.info(`Target files per job: ${filesPerJob}`);
-    } else {
-      core.info(`Target tests per job: ${testsPerJob}`);
-      if (maxTestsPerFile > 0) {
-        core.info(`Heavy test isolation: files with ${maxTestsPerFile}+ tests get own batch`);
-      }
-    }
+    core.info(`Target files per job: ${filesPerJob}`);
     core.info(`Job range: ${minJobs}-${maxJobs} per project`);
     core.info(`File patterns: ${filePatterns.join(', ')}`);
 
@@ -484,52 +440,16 @@ export async function run(): Promise<void> {
       core.info(`\nAnalyzing project: ${project}`);
 
       const fileCount = await countProjectFiles(projectPath, filePatterns);
-      let count: number;
-      let itemsPerJob: number;
-      let batches: BatchInfo[] | undefined;
+      const jobCount = calculateOptimalJobs(fileCount, filesPerJob, minJobs, maxJobs);
 
-      if (mode === 'test-count') {
-        const fileTests = await collectProjectTestFiles(projectPath, filePatterns);
-        count = fileTests.reduce((sum, file) => sum + file.testCount, 0);
-        itemsPerJob = testsPerJob;
-        batches = calculateBatchesWithBinPacking(
-          fileTests,
-          testsPerJob,
-          maxTestsPerFile,
-          minJobs,
-          maxJobs
-        );
-      } else {
-        count = fileCount;
-        itemsPerJob = filesPerJob;
-      }
-
-      const jobCount = batches
-        ? batches.length
-        : calculateOptimalJobs(count, itemsPerJob, minJobs, maxJobs);
-
-      const projectInfo: ProjectJobInfo = {
+      projectJobs.push({
         project,
         fileCount,
         jobCount,
-      };
+      });
 
-      if (mode === 'test-count') {
-        projectInfo.testCount = count;
-        projectInfo.batches = batches;
-      }
-
-      projectJobs.push(projectInfo);
-
-      if (mode === 'test-count' && batches) {
-        const batchCounts = batches.map((b) => b.testCount).join(', ');
-        core.info(
-          `  Files: ${fileCount}, Tests: ${count}, Jobs: ${jobCount} (batch test counts: ${batchCounts})`
-        );
-      } else {
-        const itemsPerJobValue = count > 0 ? Math.ceil(count / jobCount) : 0;
-        core.info(`  Files: ${fileCount}, Jobs: ${jobCount} (~${itemsPerJobValue} files/job)`);
-      }
+      const itemsPerJobValue = fileCount > 0 ? Math.ceil(fileCount / jobCount) : 0;
+      core.info(`  Files: ${fileCount}, Batches: ${jobCount} (~${itemsPerJobValue} files/batch)`);
     }
 
     const matrix = generateMatrix(projectJobs);
@@ -543,18 +463,16 @@ export async function run(): Promise<void> {
     core.info(`  Total jobs: ${matrix.length}`);
     core.info(`\nMatrix preview:`);
     for (const entry of matrix.slice(0, 10)) {
-      let preview = `  - project: ${entry.project}, batch: ${entry.batch}`;
-      if (entry.testCount !== undefined) {
-        preview += `, testCount: ${entry.testCount}`;
-      }
-      if (entry.files && entry.files.length > 0) {
-        preview += `, files: ${entry.files.length}`;
-      }
-      core.info(preview);
+      core.info(
+        `  - project: ${entry.project}, batch: ${entry.batch}/${entry.total_batches}`
+      );
     }
     if (matrix.length > 10) {
       core.info(`  ... and ${matrix.length - 10} more entries`);
     }
+    core.info(
+      `\nNote: Use total_batches to determine how many batches each project should be split into.`
+    );
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     core.setFailed(errorMessage);
